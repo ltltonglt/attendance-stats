@@ -14,6 +14,7 @@ from attendance_audit_core import (
     judge_plate_consistency,
     judge_product_consistency,
     parse_attendance_time,
+    normalize_project_id,
 )
 
 
@@ -28,6 +29,7 @@ class AttendanceAuditCoreTests(unittest.TestCase):
         plate: str = "",
         attendance_type: str = "签到",
         site_code: str = "打卡站点-2025年新",
+        project_id: str = "项目A",
         range_start: datetime | None = None,
         range_end: datetime | None = None,
     ) -> AttendanceRecord:
@@ -40,6 +42,7 @@ class AttendanceAuditCoreTests(unittest.TestCase):
             plate_number=plate,
             attendance_type=attendance_type,
             site_code=site_code,
+            project_id=project_id,
             time_range_start=range_start or time,
             time_range_end=range_end or time,
         )
@@ -66,6 +69,25 @@ class AttendanceAuditCoreTests(unittest.TestCase):
         self.assertEqual(result.remark, "")
         self.assertEqual(result.site_check, "符合")
 
+    def test_project_id_normalization_removes_trailing_parenthesized_note(self) -> None:
+        self.assertEqual(normalize_project_id("2023年四川移动技术服务项目(2人3车）"), "2023年四川移动技术服务项目")
+        self.assertEqual(normalize_project_id("2023年四川移动技术服务项目（2人3车）"), "2023年四川移动技术服务项目")
+
+    def test_project_check_uses_person_project_and_file_project(self) -> None:
+        matching = audit_person_records(
+            "LTE网络优化",
+            [self.record(product="LTE", project_id="2023年四川移动技术服务项目")],
+            person_project="2023年四川移动技术服务项目(2人3车）",
+        )
+        self.assertEqual(matching.project_check, "符合")
+
+        mismatching = audit_person_records(
+            "LTE网络优化",
+            [self.record(product="LTE", project_id="2025年四川移动无线技术服务项目")],
+            person_project="2023年四川移动技术服务项目(2人3车）",
+        )
+        self.assertEqual(mismatching.project_check, "不符")
+
     def test_site_check_fails_when_station_code_is_not_2025_new(self) -> None:
         result = audit_person_records(
             "5G NR网络优化",
@@ -74,7 +96,7 @@ class AttendanceAuditCoreTests(unittest.TestCase):
                 self.record(time=datetime(2026, 5, 13, 17, 0, 0), site_code="打卡站点-2025年新"),
             ],
         )
-        self.assertEqual(result.site_check, "不符合")
+        self.assertEqual(result.site_check, "不符")
 
     def test_site_check_passes_when_leave_range_covers_sign_date(self) -> None:
         result = audit_person_records(
@@ -183,7 +205,7 @@ class AttendanceAuditCoreTests(unittest.TestCase):
             attendance_ws.append(["签到", "李四", "another@example.com", "2026/05/13 07:50:00", "打卡站点-2025年新", "LTE", "开始用车", "川A12345"])
             attendance_ws.append(["签到", "李四", "another@example.com", "2026/05/13 18:05:00", "打卡站点-2025年新", "LTE", "结束用车", "川A12345"])
             attendance_ws.append(["请假", "李四", "another@example.com", "2026/01/23 18:00:00-2026/07/01 08:25:00", "", "LTE", "无", ""])
-            attendance_wb.save(attendance_dir / "SIGN.xlsx")
+            attendance_wb.save(attendance_dir / "P1.xlsx")
 
             summary = audit_personnel(person_file, attendance_dir, output_file)
             self.assertEqual(summary.person_count, 3)
@@ -196,25 +218,26 @@ class AttendanceAuditCoreTests(unittest.TestCase):
             output_ws = output_wb.active
 
             self.assertEqual(output_ws.cell(2, 7).value, "符合")
-            self.assertEqual(output_ws.cell(2, 8).value, datetime(2026, 5, 13, 8, 0, 0))
-            self.assertEqual(output_ws.cell(2, 9).value, datetime(2026, 5, 13, 17, 0, 0))
-            self.assertEqual(output_ws.cell(2, 10).value, "是")
-            self.assertEqual(output_ws.cell(2, 11).value, "一致")
-            self.assertEqual(output_ws.cell(2, 12).value, "/")
+            self.assertEqual(output_ws.cell(2, 8).value, "符合")
+            self.assertEqual(output_ws.cell(2, 9).value, datetime(2026, 5, 13, 8, 0, 0))
+            self.assertEqual(output_ws.cell(2, 10).value, datetime(2026, 5, 13, 17, 0, 0))
+            self.assertEqual(output_ws.cell(2, 11).value, "是")
+            self.assertEqual(output_ws.cell(2, 12).value, "一致")
             self.assertEqual(output_ws.cell(2, 13).value, "/")
-            self.assertEqual(output_ws.cell(2, 14).value, "未用车")
-            self.assertEqual(output_ws.cell(2, 15).value, None)
+            self.assertEqual(output_ws.cell(2, 14).value, "/")
+            self.assertEqual(output_ws.cell(2, 15).value, "未用车")
+            self.assertEqual(output_ws.cell(2, 16).value, None)
 
-            self.assertEqual(output_ws.cell(3, 8).value, datetime(2026, 5, 13, 9, 0, 0))
-            self.assertEqual(output_ws.cell(3, 9).value, datetime(2026, 5, 13, 16, 0, 0))
-            self.assertEqual(output_ws.cell(3, 10).value, "否")
-            self.assertEqual(output_ws.cell(3, 11).value, "一致")
+            self.assertEqual(output_ws.cell(3, 9).value, datetime(2026, 5, 13, 9, 0, 0))
+            self.assertEqual(output_ws.cell(3, 10).value, datetime(2026, 5, 13, 16, 0, 0))
+            self.assertEqual(output_ws.cell(3, 11).value, "否")
+            self.assertEqual(output_ws.cell(3, 12).value, "一致")
 
-            self.assertEqual(output_ws.cell(4, 8).value, datetime(2026, 5, 13, 8, 30, 0))
-            self.assertEqual(output_ws.cell(4, 9).value, datetime(2026, 5, 13, 18, 0, 0))
-            self.assertEqual(output_ws.cell(4, 12).value, "川A12345")
+            self.assertEqual(output_ws.cell(4, 9).value, datetime(2026, 5, 13, 8, 30, 0))
+            self.assertEqual(output_ws.cell(4, 10).value, datetime(2026, 5, 13, 18, 0, 0))
             self.assertEqual(output_ws.cell(4, 13).value, "川A12345")
-            self.assertEqual(output_ws.cell(4, 14).value, "一致")
+            self.assertEqual(output_ws.cell(4, 14).value, "川A12345")
+            self.assertEqual(output_ws.cell(4, 15).value, "一致")
 
     def test_merge_attendance_files_when_requested(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -255,10 +278,12 @@ class AttendanceAuditCoreTests(unittest.TestCase):
             merged_wb = load_workbook(merged_file, data_only=True)
             merged_ws = merged_wb.active
             self.assertEqual(merged_ws.max_row, 5)
-            self.assertEqual(merged_ws.max_column, 9)
-            self.assertEqual(merged_ws.cell(1, 9).value, "来源文件")
-            self.assertEqual(merged_ws.cell(2, 1).value, "签到")
-            self.assertEqual(merged_ws.cell(3, 1).value, "出差")
+            self.assertEqual(merged_ws.max_column, 10)
+            self.assertEqual(merged_ws.cell(1, 1).value, "项目号")
+            self.assertEqual(merged_ws.cell(1, 10).value, "来源文件")
+            self.assertEqual(merged_ws.cell(2, 1).value, "SIGN-1")
+            self.assertEqual(merged_ws.cell(2, 2).value, "签到")
+            self.assertEqual(merged_ws.cell(3, 2).value, "出差")
 
 
 if __name__ == "__main__":

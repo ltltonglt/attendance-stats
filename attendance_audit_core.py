@@ -14,6 +14,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 
 RESULT_HEADERS = [
+    "打卡项目是否符合",
     "打卡站点核查",
     "签到时间",
     "签退时间",
@@ -36,6 +37,7 @@ class AttendanceRecord:
     plate_number: str
     attendance_type: str = "签到"
     site_code: str = ""
+    project_id: str = ""
     time_range_start: datetime | None = None
     time_range_end: datetime | None = None
     source_file: str = ""
@@ -43,7 +45,8 @@ class AttendanceRecord:
 
 @dataclass
 class AuditResult:
-    site_check: str = "不符合"
+    project_check: str = "不符"
+    site_check: str = "不符"
     sign_in_time: datetime | None = None
     sign_out_time: datetime | None = None
     meets_8_hours: str = "否"
@@ -72,6 +75,12 @@ def normalize_text(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def normalize_project_id(value: Any) -> str:
+    text = normalize_text(value)
+    text = re.sub(r"\s*[\(（][^()（）]*[\)）]\s*$", "", text)
+    return text.strip()
 
 
 def parse_attendance_time(value: Any) -> datetime | None:
@@ -165,7 +174,7 @@ def judge_site_check(records: Iterable[AttendanceRecord]) -> str:
     records = list(records)
     sign_records = [record for record in records if record.attendance_type == "签到"]
     if not sign_records:
-        return "不符合"
+        return "不符"
 
     cover_records = [record for record in records if record.attendance_type in {"请假", "出差"}]
     for record in sign_records:
@@ -173,7 +182,20 @@ def judge_site_check(records: Iterable[AttendanceRecord]) -> str:
             continue
         if record_date_is_covered(record, cover_records):
             continue
-        return "不符合"
+        return "不符"
+    return "符合"
+
+
+def judge_project_check(person_project: str, records: Iterable[AttendanceRecord]) -> str:
+    expected_project = normalize_project_id(person_project)
+    if not expected_project:
+        return "不符"
+    sign_records = [record for record in records if record.attendance_type == "签到"]
+    if not sign_records:
+        return "不符"
+    for record in sign_records:
+        if normalize_project_id(record.project_id) != expected_project:
+            return "不符"
     return "符合"
 
 
@@ -230,8 +252,9 @@ def choose_plate_result(
     return start_records_with_plate[0].plate_number, end_records_with_plate[-1].plate_number, "不一致"
 
 
-def audit_person_records(person_format: str, records: Iterable[AttendanceRecord]) -> AuditResult:
+def audit_person_records(person_format: str, records: Iterable[AttendanceRecord], person_project: str = "") -> AuditResult:
     records = list(records)
+    project_check = judge_project_check(person_project, records)
     site_check = judge_site_check(records)
     sign_records = [record for record in records if record.attendance_type == "签到"]
     normal_records = [record for record in sign_records if record.car_scene == "无"]
@@ -263,6 +286,7 @@ def audit_person_records(person_format: str, records: Iterable[AttendanceRecord]
         remarks.append(f"存在{count_text(len(end_car_records))}条结束用车")
 
     return AuditResult(
+        project_check=project_check,
         site_check=site_check,
         sign_in_time=sign_in_time,
         sign_out_time=sign_out_time,
@@ -337,6 +361,7 @@ def read_attendance_records(attendance_dir: str | Path) -> tuple[list[Attendance
                     plate_number=normalize_text(sheet.cell(row, headers["车牌号"]).value),
                     attendance_type=attendance_type,
                     site_code=normalize_text(sheet.cell(row, headers["站点编码"]).value),
+                    project_id=file_path.stem,
                     time_range_start=time_range_start,
                     time_range_end=time_range_end,
                     source_file=file_path.name,
@@ -380,26 +405,29 @@ def merge_attendance_files(
         headers = [normalize_text(source_sheet.cell(1, column).value) for column in range(1, source_sheet.max_column + 1)]
         if expected_headers is None:
             expected_headers = headers
+            output_sheet.cell(1, 1).value = "项目号"
+            output_sheet.cell(1, 1).font = Font(bold=True)
             for column in range(1, source_sheet.max_column + 1):
-                copy_cell(source_sheet.cell(1, column), output_sheet.cell(1, column))
-            output_sheet.cell(1, source_sheet.max_column + 1).value = "来源文件"
-            output_sheet.cell(1, source_sheet.max_column + 1).font = Font(bold=True)
+                copy_cell(source_sheet.cell(1, column), output_sheet.cell(1, column + 1))
+            output_sheet.cell(1, source_sheet.max_column + 2).value = "来源文件"
+            output_sheet.cell(1, source_sheet.max_column + 2).font = Font(bold=True)
             merged_row = 2
         elif headers != expected_headers:
             raise AttendanceAuditError(f"{file_path.name} 的表头与其他打卡数据文件不一致，无法合并")
 
         for source_row in range(2, source_sheet.max_row + 1):
+            output_sheet.cell(merged_row, 1).value = file_path.stem
             for column in range(1, source_sheet.max_column + 1):
-                copy_cell(source_sheet.cell(source_row, column), output_sheet.cell(merged_row, column))
-            output_sheet.cell(merged_row, source_sheet.max_column + 1).value = file_path.name
+                copy_cell(source_sheet.cell(source_row, column), output_sheet.cell(merged_row, column + 1))
+            output_sheet.cell(merged_row, source_sheet.max_column + 2).value = file_path.name
             merged_row += 1
             data_row_count += 1
 
     if expected_headers:
-        for column in range(1, len(expected_headers) + 2):
+        for column in range(1, len(expected_headers) + 3):
             output_sheet.column_dimensions[output_sheet.cell(1, column).column_letter].width = 18
         output_sheet.freeze_panes = "A2"
-        output_sheet.auto_filter.ref = f"A1:{output_sheet.cell(1, len(expected_headers) + 1).column_letter}{max(1, merged_row - 1)}"
+        output_sheet.auto_filter.ref = f"A1:{output_sheet.cell(1, len(expected_headers) + 2).column_letter}{max(1, merged_row - 1)}"
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -484,6 +512,7 @@ def audit_personnel(
     for row in range(2, source_sheet.max_row + 1):
         name = normalize_text(source_sheet.cell(row, 2).value)
         email = normalize_text(source_sheet.cell(row, 3).value).lower()
+        person_project = normalize_text(source_sheet.cell(row, 1).value)
         person_format = normalize_text(source_sheet.cell(row, 4).value)
         if not name:
             continue
@@ -492,9 +521,10 @@ def audit_personnel(
             matched_records = by_name_email.get((name, email), [])
         else:
             matched_records = by_name.get(name, [])
-        result = audit_person_records(person_format, matched_records)
+        result = audit_person_records(person_format, matched_records, person_project=person_project)
 
         values = [
+            result.project_check,
             result.site_check,
             result.sign_in_time,
             result.sign_out_time,
@@ -507,27 +537,28 @@ def audit_personnel(
         ]
         for offset, value in enumerate(values, start=7):
             output_sheet.cell(row, offset).value = value
-        output_sheet.cell(row, 8).number_format = "yyyy/mm/dd hh:mm:ss"
         output_sheet.cell(row, 9).number_format = "yyyy/mm/dd hh:mm:ss"
+        output_sheet.cell(row, 10).number_format = "yyyy/mm/dd hh:mm:ss"
 
         if row % 20 == 0:
             progress(f"已核查 {row - 1} 人...")
 
     widths = {
         "G": 14,
-        "H": 20,
+        "H": 14,
         "I": 20,
-        "J": 14,
-        "K": 24,
-        "L": 14,
+        "J": 20,
+        "K": 14,
+        "L": 24,
         "M": 14,
         "N": 14,
-        "O": 34,
+        "O": 14,
+        "P": 34,
     }
     for column, width in widths.items():
         output_sheet.column_dimensions[column].width = width
     output_sheet.freeze_panes = "A2"
-    output_sheet.auto_filter.ref = f"A1:O{source_sheet.max_row}"
+    output_sheet.auto_filter.ref = f"A1:P{source_sheet.max_row}"
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     progress("正在保存结果...")

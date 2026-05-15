@@ -32,8 +32,11 @@ class AttendanceAuditApp(Tk):
         self.minsize(700, 360)
 
         cwd = Path.cwd()
+        default_attendance_dir = cwd / "打卡数据导出" / "20260515-142723"
+        if not default_attendance_dir.exists():
+            default_attendance_dir = cwd / "打卡数据导出"
         self.person_file_var = StringVar(value=str(cwd / "人员信息.xlsx"))
-        self.attendance_dir_var = StringVar(value=str(cwd / "打卡数据导出"))
+        self.attendance_dir_var = StringVar(value=str(default_attendance_dir))
         self.output_file_var = StringVar(value=str(cwd / "人员打卡核查结果.xlsx"))
         self.merge_attendance_var = BooleanVar(value=False)
         self.status_var = StringVar(value="请选择文件后开始核查")
