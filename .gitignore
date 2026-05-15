@@ -1,0 +1,20 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build and packaging outputs
+build/
+dist/
+*.spec
+
+# Local Excel data and generated reports
+*.xlsx
+~$*.xlsx
+打卡数据导出/
+
+# Local environment and editor files
+.venv/
+venv/
+.idea/
+.vscode/
