@@ -38,6 +38,7 @@ class AttendanceRecord:
     attendance_type: str = "签到"
     site_code: str = ""
     project_id: str = ""
+    approval_status: str = ""
     time_range_start: datetime | None = None
     time_range_end: datetime | None = None
     source_file: str = ""
@@ -47,8 +48,8 @@ class AttendanceRecord:
 class AuditResult:
     project_check: str = "不符"
     site_check: str = "不符"
-    sign_in_time: datetime | None = None
-    sign_out_time: datetime | None = None
+    sign_in_time: datetime | str | None = None
+    sign_out_time: datetime | str | None = None
     meets_8_hours: str = "否"
     product_consistency: str = "签到和签退制式不一致"
     sign_in_plate: str = ""
@@ -170,6 +171,20 @@ def record_date_is_covered(record: AttendanceRecord, cover_records: Iterable[Att
     return False
 
 
+def has_approved_site_correction(record: AttendanceRecord, records: Iterable[AttendanceRecord]) -> bool:
+    record_date = record.attendance_time.date()
+    for candidate in records:
+        if candidate.attendance_type != "补单":
+            continue
+        if candidate.approval_status != "审批通过":
+            continue
+        if candidate.attendance_time.date() != record_date:
+            continue
+        if "2025年新" in candidate.site_code:
+            return True
+    return False
+
+
 def judge_site_check(records: Iterable[AttendanceRecord]) -> str:
     records = list(records)
     sign_records = [record for record in records if record.attendance_type == "签到"]
@@ -182,8 +197,15 @@ def judge_site_check(records: Iterable[AttendanceRecord]) -> str:
             continue
         if record_date_is_covered(record, cover_records):
             continue
+        if has_approved_site_correction(record, records):
+            continue
         return "不符"
     return "符合"
+
+
+def is_single_leave_record(records: Iterable[AttendanceRecord]) -> bool:
+    records = list(records)
+    return len(records) == 1 and records[0].attendance_type == "请假"
 
 
 def judge_project_check(person_project: str, records: Iterable[AttendanceRecord]) -> str:
@@ -254,6 +276,20 @@ def choose_plate_result(
 
 def audit_person_records(person_format: str, records: Iterable[AttendanceRecord], person_project: str = "") -> AuditResult:
     records = list(records)
+    if is_single_leave_record(records):
+        return AuditResult(
+            project_check="请假",
+            site_check="请假",
+            sign_in_time="/",
+            sign_out_time="/",
+            meets_8_hours="/",
+            product_consistency="/",
+            sign_in_plate="/",
+            sign_out_plate="/",
+            plate_consistency="/",
+            remark="",
+        )
+
     project_check = judge_project_check(person_project, records)
     site_check = judge_site_check(records)
     sign_records = [record for record in records if record.attendance_type == "签到"]
@@ -336,7 +372,7 @@ def list_attendance_files(attendance_dir: str | Path) -> list[Path]:
 def read_attendance_records(attendance_dir: str | Path) -> tuple[list[AttendanceRecord], int]:
     files = list_attendance_files(attendance_dir)
     records: list[AttendanceRecord] = []
-    required = ["考勤类型", "姓名", "用户邮箱", "考勤时间", "站点编码", "主产品", "用车场景", "车牌号"]
+    required = ["考勤类型", "姓名", "用户邮箱", "考勤时间", "站点编码", "审批状态", "主产品", "用车场景", "车牌号"]
     for file_path in files:
         sheet = first_sheet(file_path)
         headers = header_map(sheet)
@@ -362,6 +398,7 @@ def read_attendance_records(attendance_dir: str | Path) -> tuple[list[Attendance
                     attendance_type=attendance_type,
                     site_code=normalize_text(sheet.cell(row, headers["站点编码"]).value),
                     project_id=file_path.stem,
+                    approval_status=normalize_text(sheet.cell(row, headers["审批状态"]).value),
                     time_range_start=time_range_start,
                     time_range_end=time_range_end,
                     source_file=file_path.name,
@@ -526,8 +563,8 @@ def audit_personnel(
         values = [
             result.project_check,
             result.site_check,
-            result.sign_in_time,
-            result.sign_out_time,
+            result.sign_in_time or "/",
+            result.sign_out_time or "/",
             result.meets_8_hours,
             result.product_consistency,
             result.sign_in_plate or "/",

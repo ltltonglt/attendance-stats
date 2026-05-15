@@ -30,6 +30,7 @@ class AttendanceAuditCoreTests(unittest.TestCase):
         attendance_type: str = "签到",
         site_code: str = "打卡站点-2025年新",
         project_id: str = "项目A",
+        approval_status: str = "",
         range_start: datetime | None = None,
         range_end: datetime | None = None,
     ) -> AttendanceRecord:
@@ -43,6 +44,7 @@ class AttendanceAuditCoreTests(unittest.TestCase):
             attendance_type=attendance_type,
             site_code=site_code,
             project_id=project_id,
+            approval_status=approval_status,
             time_range_start=range_start or time,
             time_range_end=range_end or time,
         )
@@ -114,6 +116,79 @@ class AttendanceAuditCoreTests(unittest.TestCase):
             ],
         )
         self.assertEqual(result.site_check, "符合")
+
+    def test_site_check_passes_when_approved_makeup_covers_same_date(self) -> None:
+        result = audit_person_records(
+            "LTE网络优化",
+            [
+                self.record(time=datetime(2026, 5, 14, 8, 47, 40), product="LTE", site_code="旧站点"),
+                self.record(time=datetime(2026, 5, 14, 17, 32, 47), product="LTE", site_code="另一个旧站点"),
+                self.record(
+                    time=datetime(2026, 5, 14, 18, 0, 0),
+                    product="LTE",
+                    attendance_type="补单",
+                    site_code="打卡站点-成都电信枢纽中心-2025年新",
+                    approval_status="审批通过",
+                ),
+            ],
+        )
+        self.assertEqual(result.site_check, "符合")
+
+    def test_site_check_fails_when_makeup_is_not_valid(self) -> None:
+        not_approved = audit_person_records(
+            "LTE网络优化",
+            [
+                self.record(time=datetime(2026, 5, 14, 8, 47, 40), product="LTE", site_code="旧站点"),
+                self.record(
+                    time=datetime(2026, 5, 14, 18, 0, 0),
+                    product="LTE",
+                    attendance_type="补单",
+                    site_code="打卡站点-成都电信枢纽中心-2025年新",
+                    approval_status="审批中",
+                ),
+            ],
+        )
+        self.assertEqual(not_approved.site_check, "不符")
+
+        wrong_date = audit_person_records(
+            "LTE网络优化",
+            [
+                self.record(time=datetime(2026, 5, 14, 8, 47, 40), product="LTE", site_code="旧站点"),
+                self.record(
+                    time=datetime(2026, 5, 15, 18, 0, 0),
+                    product="LTE",
+                    attendance_type="补单",
+                    site_code="打卡站点-成都电信枢纽中心-2025年新",
+                    approval_status="审批通过",
+                ),
+            ],
+        )
+        self.assertEqual(wrong_date.site_check, "不符")
+
+    def test_single_leave_record_outputs_leave_and_slashes(self) -> None:
+        result = audit_person_records(
+            "LTE网络优化",
+            [
+                self.record(
+                    time=datetime(2026, 5, 15, 18, 0, 0),
+                    product="LTE",
+                    attendance_type="请假",
+                    site_code="",
+                    project_id="2023年四川移动无线技术服务项目",
+                )
+            ],
+            person_project="2023年四川移动无线技术服务项目",
+        )
+        self.assertEqual(result.project_check, "请假")
+        self.assertEqual(result.site_check, "请假")
+        self.assertEqual(result.sign_in_time, "/")
+        self.assertEqual(result.sign_out_time, "/")
+        self.assertEqual(result.meets_8_hours, "/")
+        self.assertEqual(result.product_consistency, "/")
+        self.assertEqual(result.sign_in_plate, "/")
+        self.assertEqual(result.sign_out_plate, "/")
+        self.assertEqual(result.plate_consistency, "/")
+        self.assertEqual(result.remark, "")
 
     def test_uses_car_scene_times_when_normal_records_less_than_two(self) -> None:
         result = audit_person_records(
@@ -195,16 +270,16 @@ class AttendanceAuditCoreTests(unittest.TestCase):
             attendance_wb = Workbook()
             attendance_ws = attendance_wb.active
             attendance_ws.title = "data"
-            attendance_ws.append(["考勤类型", "姓名", "用户邮箱", "考勤时间", "站点编码", "主产品", "用车场景", "车牌号"])
-            attendance_ws.append(["签到", "王杰", "first@example.com", "2026/05/13 08:00:00", "打卡站点-2025年新", "5G NR", "无", ""])
-            attendance_ws.append(["签到", "王杰", "first@example.com", "2026/05/13 17:00:00", "打卡站点-2025年新", "5G NR", "无", ""])
-            attendance_ws.append(["签到", "王杰", "second@example.com", "2026/05/13 09:00:00", "打卡站点-2025年新", "LTE", "无", ""])
-            attendance_ws.append(["签到", "王杰", "second@example.com", "2026/05/13 16:00:00", "打卡站点-2025年新", "LTE", "无", ""])
-            attendance_ws.append(["签到", "李四", "wrong@example.com", "2026/05/13 08:30:00", "打卡站点-2025年新", "LTE", "无", ""])
-            attendance_ws.append(["签到", "李四", "another@example.com", "2026/05/13 18:00:00", "打卡站点-2025年新", "LTE", "无", ""])
-            attendance_ws.append(["签到", "李四", "another@example.com", "2026/05/13 07:50:00", "打卡站点-2025年新", "LTE", "开始用车", "川A12345"])
-            attendance_ws.append(["签到", "李四", "another@example.com", "2026/05/13 18:05:00", "打卡站点-2025年新", "LTE", "结束用车", "川A12345"])
-            attendance_ws.append(["请假", "李四", "another@example.com", "2026/01/23 18:00:00-2026/07/01 08:25:00", "", "LTE", "无", ""])
+            attendance_ws.append(["考勤类型", "姓名", "用户邮箱", "考勤时间", "站点编码", "审批状态", "主产品", "用车场景", "车牌号"])
+            attendance_ws.append(["签到", "王杰", "first@example.com", "2026/05/13 08:00:00", "打卡站点-2025年新", "", "5G NR", "无", ""])
+            attendance_ws.append(["签到", "王杰", "first@example.com", "2026/05/13 17:00:00", "打卡站点-2025年新", "", "5G NR", "无", ""])
+            attendance_ws.append(["签到", "王杰", "second@example.com", "2026/05/13 09:00:00", "打卡站点-2025年新", "", "LTE", "无", ""])
+            attendance_ws.append(["签到", "王杰", "second@example.com", "2026/05/13 16:00:00", "打卡站点-2025年新", "", "LTE", "无", ""])
+            attendance_ws.append(["签到", "李四", "wrong@example.com", "2026/05/13 08:30:00", "打卡站点-2025年新", "", "LTE", "无", ""])
+            attendance_ws.append(["签到", "李四", "another@example.com", "2026/05/13 18:00:00", "打卡站点-2025年新", "", "LTE", "无", ""])
+            attendance_ws.append(["签到", "李四", "another@example.com", "2026/05/13 07:50:00", "打卡站点-2025年新", "", "LTE", "开始用车", "川A12345"])
+            attendance_ws.append(["签到", "李四", "another@example.com", "2026/05/13 18:05:00", "打卡站点-2025年新", "", "LTE", "结束用车", "川A12345"])
+            attendance_ws.append(["请假", "李四", "another@example.com", "2026/01/23 18:00:00-2026/07/01 08:25:00", "", "", "LTE", "无", ""])
             attendance_wb.save(attendance_dir / "P1.xlsx")
 
             summary = audit_personnel(person_file, attendance_dir, output_file)
@@ -258,9 +333,9 @@ class AttendanceAuditCoreTests(unittest.TestCase):
                 attendance_wb = Workbook()
                 attendance_ws = attendance_wb.active
                 attendance_ws.title = "data"
-                attendance_ws.append(["考勤类型", "姓名", "用户邮箱", "考勤时间", "站点编码", "主产品", "用车场景", "车牌号"])
-                attendance_ws.append(["签到", "张三", "zhangsan@example.com", f"2026/05/13 0{index}:00:00", "打卡站点-2025年新", "LTE", "无", ""])
-                attendance_ws.append(["出差", "张三", "zhangsan@example.com", "2026/01/23 18:00:00-2026/07/01 08:25:00", "", "LTE", "无", ""])
+                attendance_ws.append(["考勤类型", "姓名", "用户邮箱", "考勤时间", "站点编码", "审批状态", "主产品", "用车场景", "车牌号"])
+                attendance_ws.append(["签到", "张三", "zhangsan@example.com", f"2026/05/13 0{index}:00:00", "打卡站点-2025年新", "", "LTE", "无", ""])
+                attendance_ws.append(["出差", "张三", "zhangsan@example.com", "2026/01/23 18:00:00-2026/07/01 08:25:00", "", "", "LTE", "无", ""])
                 attendance_wb.save(attendance_dir / f"SIGN-{index}.xlsx")
 
             summary = audit_personnel(
@@ -278,9 +353,9 @@ class AttendanceAuditCoreTests(unittest.TestCase):
             merged_wb = load_workbook(merged_file, data_only=True)
             merged_ws = merged_wb.active
             self.assertEqual(merged_ws.max_row, 5)
-            self.assertEqual(merged_ws.max_column, 10)
+            self.assertEqual(merged_ws.max_column, 11)
             self.assertEqual(merged_ws.cell(1, 1).value, "项目号")
-            self.assertEqual(merged_ws.cell(1, 10).value, "来源文件")
+            self.assertEqual(merged_ws.cell(1, 11).value, "来源文件")
             self.assertEqual(merged_ws.cell(2, 1).value, "SIGN-1")
             self.assertEqual(merged_ws.cell(2, 2).value, "签到")
             self.assertEqual(merged_ws.cell(3, 2).value, "出差")
