@@ -171,20 +171,6 @@ def record_date_is_covered(record: AttendanceRecord, cover_records: Iterable[Att
     return False
 
 
-def has_approved_site_correction(record: AttendanceRecord, records: Iterable[AttendanceRecord]) -> bool:
-    record_date = record.attendance_time.date()
-    for candidate in records:
-        if candidate.attendance_type != "补单":
-            continue
-        if candidate.approval_status != "审批通过":
-            continue
-        if candidate.attendance_time.date() != record_date:
-            continue
-        if "2025年新" in candidate.site_code:
-            return True
-    return False
-
-
 def judge_site_check(records: Iterable[AttendanceRecord]) -> str:
     records = list(records)
     sign_records = [record for record in records if record.attendance_type == "签到"]
@@ -192,14 +178,24 @@ def judge_site_check(records: Iterable[AttendanceRecord]) -> str:
         return "不符"
 
     cover_records = [record for record in records if record.attendance_type in {"请假", "出差"}]
+    invalid_sign_count_by_date: Counter[Any] = Counter()
     for record in sign_records:
         if "2025年新" in record.site_code:
             continue
         if record_date_is_covered(record, cover_records):
             continue
-        if has_approved_site_correction(record, records):
-            continue
-        return "不符"
+        invalid_sign_count_by_date[record.attendance_time.date()] += 1
+
+    valid_makeup_count_by_date = Counter(
+        record.attendance_time.date()
+        for record in records
+        if record.attendance_type == "补单"
+        and record.approval_status == "审批通过"
+        and "2025年新" in record.site_code
+    )
+    for record_date, invalid_count in invalid_sign_count_by_date.items():
+        if valid_makeup_count_by_date[record_date] < invalid_count:
+            return "不符"
     return "符合"
 
 

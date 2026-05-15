@@ -130,9 +130,33 @@ class AttendanceAuditCoreTests(unittest.TestCase):
                     site_code="打卡站点-成都电信枢纽中心-2025年新",
                     approval_status="审批通过",
                 ),
+                self.record(
+                    time=datetime(2026, 5, 14, 18, 5, 0),
+                    product="LTE",
+                    attendance_type="补单",
+                    site_code="打卡站点-成都电信枢纽中心-2025年新",
+                    approval_status="审批通过",
+                ),
             ],
         )
         self.assertEqual(result.site_check, "符合")
+
+    def test_site_check_fails_when_makeup_count_is_less_than_bad_sign_count(self) -> None:
+        result = audit_person_records(
+            "LTE网络优化",
+            [
+                self.record(time=datetime(2026, 5, 14, 8, 47, 40), product="LTE", site_code="旧站点"),
+                self.record(time=datetime(2026, 5, 14, 17, 32, 47), product="LTE", site_code="另一个旧站点"),
+                self.record(
+                    time=datetime(2026, 5, 14, 18, 0, 0),
+                    product="LTE",
+                    attendance_type="补单",
+                    site_code="打卡站点-成都电信枢纽中心-2025年新",
+                    approval_status="审批通过",
+                ),
+            ],
+        )
+        self.assertEqual(result.site_check, "不符")
 
     def test_site_check_fails_when_makeup_is_not_valid(self) -> None:
         not_approved = audit_person_records(
