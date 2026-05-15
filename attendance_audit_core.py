@@ -14,6 +14,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 
 RESULT_HEADERS = [
+    "打卡站点核查",
     "签到时间",
     "签退时间",
     "是否满足8小时",
@@ -33,11 +34,16 @@ class AttendanceRecord:
     product: str
     car_scene: str
     plate_number: str
+    attendance_type: str = "签到"
+    site_code: str = ""
+    time_range_start: datetime | None = None
+    time_range_end: datetime | None = None
     source_file: str = ""
 
 
 @dataclass
 class AuditResult:
+    site_check: str = "不符合"
     sign_in_time: datetime | None = None
     sign_out_time: datetime | None = None
     meets_8_hours: str = "否"
@@ -95,6 +101,19 @@ def parse_attendance_time(value: Any) -> datetime | None:
     raise AttendanceAuditError(f"无法解析考勤时间：{text}")
 
 
+def parse_attendance_time_range(value: Any) -> tuple[datetime | None, datetime | None]:
+    if isinstance(value, datetime):
+        return value, value
+    text = normalize_text(value)
+    if not text:
+        return None, None
+    matches = re.findall(r"\d{4}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?", text)
+    if len(matches) >= 2:
+        return parse_attendance_time(matches[0]), parse_attendance_time(matches[-1])
+    parsed = parse_attendance_time(value)
+    return parsed, parsed
+
+
 def expected_product_keyword(person_format: str) -> str:
     text = normalize_text(person_format).upper()
     if "5G NR" in text or "5GNR" in text:
@@ -130,6 +149,32 @@ def judge_product_consistency(
     if sign_in_ok and not sign_out_ok:
         return "签退制式不一致"
     return "签到和签退制式不一致"
+
+
+def record_date_is_covered(record: AttendanceRecord, cover_records: Iterable[AttendanceRecord]) -> bool:
+    record_date = record.attendance_time.date()
+    for cover_record in cover_records:
+        if not cover_record.time_range_start or not cover_record.time_range_end:
+            continue
+        if cover_record.time_range_start.date() <= record_date <= cover_record.time_range_end.date():
+            return True
+    return False
+
+
+def judge_site_check(records: Iterable[AttendanceRecord]) -> str:
+    records = list(records)
+    sign_records = [record for record in records if record.attendance_type == "签到"]
+    if not sign_records:
+        return "不符合"
+
+    cover_records = [record for record in records if record.attendance_type in {"请假", "出差"}]
+    for record in sign_records:
+        if "2025年新" in record.site_code:
+            continue
+        if record_date_is_covered(record, cover_records):
+            continue
+        return "不符合"
+    return "符合"
 
 
 def judge_plate_consistency(sign_in_plate: str, sign_out_plate: str) -> str:
@@ -187,9 +232,11 @@ def choose_plate_result(
 
 def audit_person_records(person_format: str, records: Iterable[AttendanceRecord]) -> AuditResult:
     records = list(records)
-    normal_records = [record for record in records if record.car_scene == "无"]
-    start_car_records = [record for record in records if record.car_scene == "开始用车"]
-    end_car_records = [record for record in records if record.car_scene == "结束用车"]
+    site_check = judge_site_check(records)
+    sign_records = [record for record in records if record.attendance_type == "签到"]
+    normal_records = [record for record in sign_records if record.car_scene == "无"]
+    start_car_records = [record for record in sign_records if record.car_scene == "开始用车"]
+    end_car_records = [record for record in sign_records if record.car_scene == "结束用车"]
 
     time_candidate_records = normal_records
     if len(normal_records) < 2:
@@ -216,6 +263,7 @@ def audit_person_records(person_format: str, records: Iterable[AttendanceRecord]
         remarks.append(f"存在{count_text(len(end_car_records))}条结束用车")
 
     return AuditResult(
+        site_check=site_check,
         sign_in_time=sign_in_time,
         sign_out_time=sign_out_time,
         meets_8_hours=meets_8_hours,
@@ -264,7 +312,7 @@ def list_attendance_files(attendance_dir: str | Path) -> list[Path]:
 def read_attendance_records(attendance_dir: str | Path) -> tuple[list[AttendanceRecord], int]:
     files = list_attendance_files(attendance_dir)
     records: list[AttendanceRecord] = []
-    required = ["考勤类型", "姓名", "用户邮箱", "考勤时间", "主产品", "用车场景", "车牌号"]
+    required = ["考勤类型", "姓名", "用户邮箱", "考勤时间", "站点编码", "主产品", "用车场景", "车牌号"]
     for file_path in files:
         sheet = first_sheet(file_path)
         headers = header_map(sheet)
@@ -272,13 +320,12 @@ def read_attendance_records(attendance_dir: str | Path) -> tuple[list[Attendance
 
         for row in range(2, sheet.max_row + 1):
             attendance_type = normalize_text(sheet.cell(row, headers["考勤类型"]).value)
-            if attendance_type != "签到":
-                continue
-            time_value = parse_attendance_time(sheet.cell(row, headers["考勤时间"]).value)
-            if time_value is None:
-                continue
             name = normalize_text(sheet.cell(row, headers["姓名"]).value)
             if not name:
+                continue
+            time_range_start, time_range_end = parse_attendance_time_range(sheet.cell(row, headers["考勤时间"]).value)
+            time_value = time_range_end
+            if time_value is None:
                 continue
             records.append(
                 AttendanceRecord(
@@ -288,6 +335,10 @@ def read_attendance_records(attendance_dir: str | Path) -> tuple[list[Attendance
                     product=normalize_text(sheet.cell(row, headers["主产品"]).value),
                     car_scene=normalize_text(sheet.cell(row, headers["用车场景"]).value),
                     plate_number=normalize_text(sheet.cell(row, headers["车牌号"]).value),
+                    attendance_type=attendance_type,
+                    site_code=normalize_text(sheet.cell(row, headers["站点编码"]).value),
+                    time_range_start=time_range_start,
+                    time_range_end=time_range_end,
                     source_file=file_path.name,
                 )
             )
@@ -394,6 +445,7 @@ def audit_personnel(
 
     progress("正在读取打卡数据...")
     attendance_records, attendance_file_count = read_attendance_records(attendance_dir)
+    sign_record_count = sum(1 for record in attendance_records if record.attendance_type == "签到")
     by_name, by_name_email = build_record_index(attendance_records)
 
     progress("正在读取人员信息...")
@@ -443,6 +495,7 @@ def audit_personnel(
         result = audit_person_records(person_format, matched_records)
 
         values = [
+            result.site_check,
             result.sign_in_time,
             result.sign_out_time,
             result.meets_8_hours,
@@ -454,26 +507,27 @@ def audit_personnel(
         ]
         for offset, value in enumerate(values, start=7):
             output_sheet.cell(row, offset).value = value
-        output_sheet.cell(row, 7).number_format = "yyyy/mm/dd hh:mm:ss"
         output_sheet.cell(row, 8).number_format = "yyyy/mm/dd hh:mm:ss"
+        output_sheet.cell(row, 9).number_format = "yyyy/mm/dd hh:mm:ss"
 
         if row % 20 == 0:
             progress(f"已核查 {row - 1} 人...")
 
     widths = {
-        "G": 20,
+        "G": 14,
         "H": 20,
-        "I": 14,
-        "J": 24,
-        "K": 14,
+        "I": 20,
+        "J": 14,
+        "K": 24,
         "L": 14,
         "M": 14,
-        "N": 34,
+        "N": 14,
+        "O": 34,
     }
     for column, width in widths.items():
         output_sheet.column_dimensions[column].width = width
     output_sheet.freeze_panes = "A2"
-    output_sheet.auto_filter.ref = f"A1:N{source_sheet.max_row}"
+    output_sheet.auto_filter.ref = f"A1:O{source_sheet.max_row}"
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     progress("正在保存结果...")
@@ -486,7 +540,7 @@ def audit_personnel(
     return AuditSummary(
         person_count=max(0, source_sheet.max_row - 1),
         attendance_file_count=attendance_file_count,
-        attendance_record_count=len(attendance_records),
+        attendance_record_count=sign_record_count,
         output_path=output_file,
         duplicate_names=duplicate_names,
         merged_output_path=merged_output_path,
