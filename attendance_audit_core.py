@@ -20,6 +20,7 @@ RESULT_HEADERS = [
     "签退时间",
     "是否满足8小时",
     "打卡制式是否一致",
+    "打卡经纬度核查",
     "签到车牌",
     "签退车牌",
     "车牌是否一致",
@@ -35,6 +36,7 @@ class AttendanceRecord:
     product: str
     car_scene: str
     plate_number: str
+    user_location: str = ""
     attendance_type: str = "签到"
     site_code: str = ""
     project_id: str = ""
@@ -52,6 +54,7 @@ class AuditResult:
     sign_out_time: datetime | str | None = None
     meets_8_hours: str = "否"
     product_consistency: str = "签到和签退制式不一致"
+    location_consistency: str = "异常"
     sign_in_plate: str = ""
     sign_out_plate: str = ""
     plate_consistency: str = "缺少签到"
@@ -159,6 +162,21 @@ def judge_product_consistency(
     if sign_in_ok and not sign_out_ok:
         return "签退制式不一致"
     return "签到和签退制式不一致"
+
+
+def judge_location_consistency(
+    sign_in_record: AttendanceRecord | None,
+    sign_out_record: AttendanceRecord | None,
+) -> str:
+    if not sign_in_record or not sign_out_record:
+        return "异常"
+    sign_in_location = normalize_text(sign_in_record.user_location)
+    sign_out_location = normalize_text(sign_out_record.user_location)
+    if not sign_in_location or not sign_out_location:
+        return "异常"
+    if sign_in_location == sign_out_location:
+        return "异常"
+    return "正常"
 
 
 def record_date_is_covered(record: AttendanceRecord, cover_records: Iterable[AttendanceRecord]) -> bool:
@@ -280,6 +298,7 @@ def audit_person_records(person_format: str, records: Iterable[AttendanceRecord]
             sign_out_time="/",
             meets_8_hours="/",
             product_consistency="/",
+            location_consistency="/",
             sign_in_plate="/",
             sign_out_plate="/",
             plate_consistency="/",
@@ -324,6 +343,7 @@ def audit_person_records(person_format: str, records: Iterable[AttendanceRecord]
         sign_out_time=sign_out_time,
         meets_8_hours=meets_8_hours,
         product_consistency=judge_product_consistency(person_format, sign_in_record, sign_out_record),
+        location_consistency=judge_location_consistency(sign_in_record, sign_out_record),
         sign_in_plate=sign_in_plate,
         sign_out_plate=sign_out_plate,
         plate_consistency=plate_consistency,
@@ -368,7 +388,7 @@ def list_attendance_files(attendance_dir: str | Path) -> list[Path]:
 def read_attendance_records(attendance_dir: str | Path) -> tuple[list[AttendanceRecord], int]:
     files = list_attendance_files(attendance_dir)
     records: list[AttendanceRecord] = []
-    required = ["考勤类型", "姓名", "用户邮箱", "考勤时间", "站点编码", "审批状态", "主产品", "用车场景", "车牌号"]
+    required = ["考勤类型", "姓名", "用户邮箱", "考勤时间", "站点编码", "用户打卡经纬度", "审批状态", "主产品", "用车场景", "车牌号"]
     for file_path in files:
         sheet = first_sheet(file_path)
         headers = header_map(sheet)
@@ -391,6 +411,7 @@ def read_attendance_records(attendance_dir: str | Path) -> tuple[list[Attendance
                     product=normalize_text(sheet.cell(row, headers["主产品"]).value),
                     car_scene=normalize_text(sheet.cell(row, headers["用车场景"]).value),
                     plate_number=normalize_text(sheet.cell(row, headers["车牌号"]).value),
+                    user_location=normalize_text(sheet.cell(row, headers["用户打卡经纬度"]).value),
                     attendance_type=attendance_type,
                     site_code=normalize_text(sheet.cell(row, headers["站点编码"]).value),
                     project_id=file_path.stem,
@@ -563,6 +584,7 @@ def audit_personnel(
             result.sign_out_time or "/",
             result.meets_8_hours,
             result.product_consistency,
+            result.location_consistency,
             result.sign_in_plate or "/",
             result.sign_out_plate or "/",
             result.plate_consistency,
@@ -583,15 +605,16 @@ def audit_personnel(
         "J": 20,
         "K": 14,
         "L": 24,
-        "M": 14,
+        "M": 16,
         "N": 14,
         "O": 14,
-        "P": 34,
+        "P": 14,
+        "Q": 34,
     }
     for column, width in widths.items():
         output_sheet.column_dimensions[column].width = width
     output_sheet.freeze_panes = "A2"
-    output_sheet.auto_filter.ref = f"A1:P{source_sheet.max_row}"
+    output_sheet.auto_filter.ref = f"A1:Q{source_sheet.max_row}"
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     progress("正在保存结果...")
